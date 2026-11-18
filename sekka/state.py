@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import math
 
+from . import fastpath
+
 CIPHER_ENTROPY = 7.2
 DEFAULT_PAGE = 0x1000
 
@@ -42,8 +44,12 @@ def classify(data):
     """Verdict for a byte region: ``empty`` / ``cipher-like`` / ``plain-like``."""
     if not data or not any(data):
         return {"entropy": 0.0, "zero_ratio": 1.0, "verdict": "empty"}
-    entropy = shannon_entropy(data)
-    zeros = zero_ratio(data)
+    if fastpath.HAVE_NUMPY:
+        entropy = fastpath.shannon_entropy(data)
+        zeros = fastpath.zero_ratio(data)
+    else:
+        entropy = shannon_entropy(data)
+        zeros = zero_ratio(data)
     if entropy >= CIPHER_ENTROPY and zeros < 0.02:
         verdict = "cipher-like"
     else:

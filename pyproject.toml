@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sekka"
-version = "0.1.0"
+version = "0.2.0"
 description = "Static analysis for x64 PE exception tables: RUNTIME_FUNCTION lookup and UNWIND_INFO parsing (handlers, unwind codes, chained info), with readable-state selection across multiple memory captures"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -27,6 +27,11 @@ Issues = "https://github.com/sh-sunfaded/Sekka/issues"
 
 [project.scripts]
 sekka = "sekka.cli:main"
+
+[project.optional-dependencies]
+# NumPy は任意依存(標準ライブラリのみでも全機能が動作する)。
+# 導入するとホットパスが自動でベクトル化実装に切り替わる。
+fast = ["numpy>=1.26"]
 
 [tool.setuptools]
 packages = ["sekka"]

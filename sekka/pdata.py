@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import struct
 
+from . import fastpath
 from .pe import PEError
 
 ENTRY_SIZE = 12
@@ -54,6 +55,12 @@ def load_entries(image):
                 break
     if not rva or not size:
         return []
+    if fastpath.HAVE_NUMPY:
+        triples = fastpath.load_entries(image, rva, size)
+        if triples is not None:
+            begins, ends, unwinds = triples
+            return [RuntimeFunction(b, e, u)
+                    for b, e, u in zip(begins, ends, unwinds)]
     entries = []
     for off in range(0, size - ENTRY_SIZE + 1, ENTRY_SIZE):
         chunk = image.read(rva + off, ENTRY_SIZE)
@@ -93,11 +100,28 @@ def scan_candidates(image, rva, limit=16):
     whole image looking for 12-byte triples that cover the target and whose
     UnwindData resolves to a parseable UNWIND_INFO.  Returns a list of
     ``(offset, RuntimeFunction)`` pairs.
+
+    With NumPy installed the offset pre-filter runs as one vectorized mask
+    (:func:`sekka.fastpath.scan_triples`); per-candidate UNWIND_INFO
+    validation stays pure either way.
     """
     from .unwind import parse as parse_unwind  # local import: avoids a cycle
 
-    results = []
     data = image.data
+    results = []
+    if fastpath.HAVE_NUMPY:
+        for off in fastpath.scan_triples(data, rva, MAX_PLAUSIBLE_FUNCTION):
+            begin, end, unwind = struct.unpack_from("<III", data, off)
+            if unwind == 0 or image.rva_to_off(unwind) is None:
+                continue
+            try:
+                parse_unwind(image, unwind)
+            except PEError:
+                continue
+            results.append((off, RuntimeFunction(begin, end, unwind)))
+            if len(results) >= limit:
+                break
+        return results
     n = len(data)
     for off in range(0, n - ENTRY_SIZE, 4):
         begin, end, unwind = struct.unpack_from("<III", data, off)
