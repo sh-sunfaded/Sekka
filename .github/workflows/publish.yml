@@ -16,8 +16,8 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install build twine
-      - name: Run tests
+          pip install build twine numpy
+      - name: Run tests (NumPy導入環境=等価性検証込み)
         run: python3 tests/test_sekka.py
       - name: Build sdist and wheel
         run: python -m build

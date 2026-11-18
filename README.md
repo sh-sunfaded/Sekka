@@ -1,159 +1,138 @@
-# sekka (雪華)
+# sekka(雪華)— x64 PE 例外テーブル(.pdata)静的解析ツールキット
 
-Static analysis toolkit for the x64 PE exception table (`.pdata`) and unwind
-information (`UNWIND_INFO`).
+**sekka**は、64ビットPEイメージの例外テーブル(`.pdata` / `RUNTIME_FUNCTION`)とアンワインド情報(`UNWIND_INFO`)を静的に解析するPythonツールキットです。実行せず、ファイル(またはメモリダンプ)から例外処理のメタデータを読み、次のような問いに答えます。
 
-sekka answers the question a stack walker, a profiler, or a compatibility
-layer has to answer: **given an address, which function covers it, and which
-language handler should run if it faults?**
+- このアドレスはどの関数に属するのか(例外ハンドラ表引き)
+- ある関数領域にアンワインド情報は存在するか
+- この`.pdata`は壊れていないか(整合性検証)
 
-The name comes from the Japanese word for a snow crystal, 雪華.
+雪華は「雪の結晶」の意。x86-64のアンワインド情報は、関数の境界を結晶のように規則正しく記録する静的構造です。
 
-## What it does
+## 特徴
 
-- **RUNTIME_FUNCTION lookup** - enumerate the x64 exception table and find
-  the `RUNTIME_FUNCTION` (begin / end / unwind-data) covering any RVA.
-- **UNWIND_INFO parsing** - version, flags (`EHANDLER` / `UHANDLER` /
-  `CHAININFO`), prolog size, frame register, the full unwind-code array
-  (decoded into readable text), and the **language handler RVA**.
-- **Chained info** - follows `UNW_FLAG_CHAININFO` links and resolves the
-  whole handler chain.
-- **Multi-capture selection** - when several snapshots of the same image are
-  available (captures taken at different moments), sekka estimates which one
-  holds the target region in a readable state (entropy heuristics) and uses
-  that capture. Transformed high-entropy pages are detected and skipped in
-  favour of plain-looking ones.
-- **Brute-force scan** - if the exception directory is missing or not
-  readable in a capture, `--scan` walks the image for plausible
-  `RUNTIME_FUNCTION` triples that cover the target and resolve to a
-  parseable `UNWIND_INFO`.
-- **Both input kinds** - on-disk PE files (section-mapped) and memory-image
-  captures (flat, RVA == offset), with automatic stripping of textual
-  capture headers.
+- **純Python・サードパーティ依存ゼロ**で動作(NumPyは後述の任意依存)
+- `.pdata`ディレクトリが壊れている・欠けているイメージでも、**パターン走査で`RUNTIME_FUNCTION`候補を発掘**
+- メモリキャプチャにも対応:`sekka -`からの`REGION`系ヘッダの自動除去に対応
+- Python API(ライブラリ)とCLI(コマンド)の両面で使える
 
-## Why
+非破壊・非実行の静的解析ツールであり、例外ディレクトリが壊れたPEの復旧、クラッシュレポートのスタック逆算、プロファイラの関数境界抽出、CIでのlintなどに使えます。
 
-The x64 exception table is ordinary, documented Windows metadata, and a
-surprising amount of tooling needs it:
+## インストール
 
-- **crash reporting** - offline stack walking from minidumps requires
-  reading `.pdata` and replaying unwind codes (the Breakpad/Crashpad
-  approach);
-- **sampling profilers** - reconstructing a call stack from another process
-  needs the same records on every sample;
-- **function boundaries** - `.pdata` is a free, authoritative function
-  table for binaries without symbols;
-- **build checks** - a function without unwind info only fails when an
-  exception actually fires; sekka can lint for that in CI;
-- **OS compatibility work** - any layer that dispatches Windows x64
-  exceptions itself has to read these tables.
-
-Existing Python tooling mostly stops at enumerating `RUNTIME_FUNCTION`
-entries; sekka decodes the `UNWIND_INFO` records as well, in pure Python.
-
-## Install
-
-```
+```console
 pip install sekka
 ```
 
-or from source:
+NumPyによる高速化を有効にする場合:
 
-```
-git clone https://github.com/sh-sunfaded/Sekka
-cd Sekka
-pip install .
+```console
+pip install sekka[fast]
 ```
 
-No third-party dependencies: sekka is pure standard library.
+## コマンド
 
-## CLI
-
-```
-# Which function covers RVA 0xB42B3, and who is its handler?
-sekka lookup image.exe --rva 0xB42B3
-
-# Several captures of the same image? sekka picks the readable one.
-sekka lookup capture1.bin capture2.bin capture3.bin --rva 0xB42B3
-
-# Directory missing in the capture? fall back to a brute-force scan.
-sekka lookup capture.bin --rva 0xB42B3 --scan
-
-# Machine-readable output
-sekka lookup capture.bin --rva 0xB42B3 --json
-
-# List the whole exception table
-sekka table image.exe --start 0x1400 --end 0x2000
-
-# List every function that registers a language handler
-sekka handlers image.exe
-
-# Assert a known-good pair (exit code 0/1) - useful as a regression check
-sekka validate image.exe --rva 0xAD239 --handler 0xB63F0
+```console
+python3 -m sekka.cli <command> <PEファイル> [options]
 ```
 
-Example output:
+| コマンド | 内容 |
+|---|---|
+| `lookup` | アドレスから関数範囲・アンワインド情報の位置を検索 |
+| `table` | `.pdata`ディレクトリの全エントリを一覧 |
+| `handlers` | `.pdata`を走査し、例外ハンドラを持つ関数を一覧 |
+| `validate` | `.pdata`の整合性検証(begin/end/unwindの妥当性・重複) |
 
+### lookup: アドレスから関数表引き
+
+```console
+$ python3 -m sekka.cli lookup app.exe 0x140010020
+0x140010020 → function [0x140010000, 0x140010080)  unwind @0x140020000
+$ python3 -m sekka.cli lookup app.exe --scan 0x140010020
 ```
-image: capture.bin
-function: begin rva 0xAD200 (VA 0x1400AD200)  end rva 0xAD400 (VA 0x1400AD400)
-unwind: rva 0x1B000 (VA 0x14001B000)
-unwind info: version 1  flags EHANDLER  prolog 0x9  codes 4
-  [0] push rbp
-  [1] push rbx
-  [2] sub rsp, 0x30
-  [3] save rcx at frame offset 0x80
-language handler: rva 0xB63F0 (VA 0x1400B63F0)
+
+`--scan`を付けると、`.pdata`ディレクトリ自体が壊れている場合でもイメージ全体をパターン走査して該当エントリを探します。メモリキャプチャは`REGION:`行込みのテキストから入力できます:
+
+```console
+$ python3 -m sekka.cli lookup dump.txt --json
+[{"query": "0x140010020", "begin": "0x140010000", "end": "0x140010080", "unwind_rva": "0x2000"}]
+```
+
+### handlers: 例外ハンドラ表
+
+```console
+$ python3 -m sekka.cli handlers app.exe --scan
+scanned 1165 RUNTIME_FUNCTION candidates
+  0x140001000..0x140001100  handler 0x00BEEF
+```
+
+`--scan`無しはディレクトリ読み込み、`--scan`は走査を表します。
+
+### validate: 例外テーブル整合性検証
+
+```console
+$ python3 -m sekka.cli validate app.exe
+ok
+$ python3 -m sekka.cli validate stripped.exe
+error: no .pdata; rerun with --scan
+$ python3 -m sekka.cli validate corrupt.exe --scan
+warning: entry #37: unwind RVA 0x26000 beyond image end (0x24000)
 ```
 
 ## Python API
 
 ```python
-from sekka import pe, pdata, unwind
+from sekka import pe, pdata
 
-image = pe.load(open("capture.bin", "rb").read())
-entry = pdata.lookup(image, 0xB42B3)
-if entry is not None:
-    info = unwind.parse(image, entry.unwind)
-    print(hex(entry.begin), hex(entry.end), hex(info.handler_rva or 0))
+img = pe.load("app.exe")
+entries = pdata.load_entries(img)          # 例外テーブル読み込み
+fn = pdata.lookup(entries, 0x140010020)     # 表引き
+cands = pdata.scan_candidates(img)         # 走査による候補発掘
 ```
 
-Multi-capture selection:
+`pe.load()`は、オンディスクのPE(`.exe`/`.dll`)と、先頭に`REGION:`行が付いたメモリキャプチャ形式の両方を受け付けます。
 
-```python
-from sekka import pe
-from sekka.state import choose
+## 入力形式
 
-images = {name: pe.load(open(p, "rb").read())
-          for name, p in [("run-a", "a.bin"), ("run-b", "b.bin")]}
-rows = choose(images, rva=0xB42B3)  # plain-like captures first
+- 通常のPEファイル(MZ/PEヘッダ + `.pdata`ディレクトリ)
+- メモリキャプチャ(`REGION: <start> <size>`ヘッダ + 生ダンプ)は自動判別し、ヘッダ行を取り除いて処理します
+
+## パフォーマンス(任意依存: NumPy)
+
+`sekka[fast]`を導入すると、以下の処理がNumPyでベクトル化されます。未導入でも純Python実装が同じ結果を返します(ドロップイン置換)。
+
+| 処理 | 高速化手法 |
+|---|---|
+| エントロピ計算・ゼロ比率 | `np.frombuffer` + `bincount`一括集計 |
+| 例外テーブル読み込み | `frombuffer`で(N,3)行列化 → 無効エントリをマスク一括除外 |
+| パターン走査候補抽出 | u4ビュー + スライス3枚で全オフセットを一括マスク → `flatnonzero`で列挙 |
+
+走査ヒット後の個々の候補検証(`UNWIND_INFO`解読、RVA→オセット変換、関数範囲の上限判定)はデータ依存の分岐が多く、ベクトル化せず純Pythonのまま検証します。ハンドラ表引きは二分探索(O(log n))で、検索本数が多くない限り十分高速です。
+
+## モジュール
+
+| モジュール | 役割 |
+|---|---|
+| `sekka/pe.py` | PEローダ(ヘッダ解析・セクション・RVA⇔オセット変換) |
+| `sekka/pdata.py` | 例外テーブルの読み込み・表引き・走査 |
+| `sekka/unwind.py` | UNWIND_INFOの解析(プロローグ命令列の復号) |
+| `sekka/state.py` | 走査候補の統計的評価(エントロピ・ゼロ比率による分類) |
+| `sekka/fastpath.py` | NumPy実装(HAVE_NUMPYで自動切替、未導入なら純実装にfallback) |
+| `sekka/cli.py` | コマンドラインフロントエンド |
+
+## テスト
+
+```console
+$ python3 tests/test_sekka.py
 ```
 
-## Modules
+合成PEイメージを動的に組み立てるため、外部フィクスチャは不要です。NumPyが導入された環境では高速実装と純実装の**等価性テスト**が自動的に走ります(未導入ではskip)。
 
-| module      | contents                                                       |
-|-------------|----------------------------------------------------------------|
-| `sekka.pe`     | minimal PE32+ reader: headers, sections, data directories, RVA mapping |
-| `sekka.pdata`  | RUNTIME_FUNCTION enumeration, lookup, brute-force scan          |
-| `sekka.unwind` | UNWIND_INFO parsing, unwind-code decoding, chained info        |
-| `sekka.state`  | entropy heuristics, multi-capture selection                    |
-| `sekka.cli`    | the `sekka` command                                             |
+## 制限
 
-## Design notes
+- x86-64のみ(chained unwind info は平坦化して扱います)
+- 例外ディレクトリ破損時の走査はヒューリスティックであり、擬陽性(データ中の偶然の一致)を含みます
+- 静的解析のみ。実行時の例外動作の再現は行いません
 
-- Pure standard library; runs on Python 3.9+; no platform-specific code.
-- All tests run against synthetic PE images built in memory - no external
-  fixtures and no real binaries.
-- RVA translation goes through the section table first, then falls back to
-  a flat RVA==offset mapping, so the same code handles on-disk files and
-  memory captures.
-
-## Testing
-
-```
-python3 tests/test_sekka.py
-```
-
-## License
+## ライセンス
 
 Apache-2.0

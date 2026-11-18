@@ -17,9 +17,9 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sekka import cli, pe, pdata  # noqa: E402
+from sekka import cli, fastpath, pe, pdata  # noqa: E402
 from sekka import unwind as uw  # noqa: E402
-from sekka.state import classify, choose, shannon_entropy  # noqa: E402
+from sekka.state import classify, choose, shannon_entropy, zero_ratio  # noqa: E402
 
 # ----------------------------------------------------------------------
 # Synthetic PE32+ builder
@@ -466,6 +466,158 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("captures at rva 0x1400", out)
         self.assertIn("image: plain-capture.bin", out)
+
+
+# ----------------------------------------------------------------------
+# Fastpath (NumPy) verification
+#
+# This sandbox has no NumPy, so the vectorized implementations are
+# verified in two layers, following the same approach as izayoi:
+#   1. pure-Python mirrors of the fastpath index arithmetic, checked
+#      against the pure reference implementations (always runs);
+#   2. true equivalence tests against the NumPy implementations
+#      (skipped without NumPy, run in CI and on NumPy environments).
+# ----------------------------------------------------------------------
+
+def _sim_scan_offsets(data, rva, max_size):
+    """Pure mirror of fastpath.scan_triples index arithmetic."""
+    usable = len(data) - (len(data) % 4)
+    words = list(struct.unpack("<%dI" % (usable // 4), data[:usable])) \
+        if usable >= 4 else []
+    n = len(words)
+    out = []
+    for i in range(max(n - 2, 0)):
+        b, e, u = words[i], words[i + 1], words[i + 2]
+        if b != 0 and b <= rva and e > rva and (e - b) <= max_size and u != 0:
+            out.append(i * 4)
+    return out
+
+
+def _sim_load_triples(chunk):
+    """Pure mirror of fastpath.load_entries mask filter."""
+    triples = [struct.unpack_from("<III", chunk, i)
+               for i in range(0, len(chunk) - 11, 12)]
+    return [t for t in triples if t[0] != 0 and t[1] > t[0] and t[2] != 0]
+
+
+class TestFastpathSimulation(unittest.TestCase):
+    def test_sim_scan_offsets_clean_image(self):
+        # Only planted entries: pre-filter offsets == pure scan results.
+        sections = [
+            (".text", 0x1000, b"\x90" * 0x1000),
+            (".rdata", 0x2000, RDATA + PDATA),
+        ]
+        img = pe.load(build_image(sections))
+        pure = pdata.scan_candidates(img, 0x1400)
+        sim = _sim_scan_offsets(img.data, 0x1400,
+                                pdata.MAX_PLAUSIBLE_FUNCTION)
+        # The mask pre-filter is a superset of the validated pure scan:
+        # header bytes and non-entry data can also satisfy the coarse
+        # begin/end/unwind mask, but only validated entries survive.
+        self.assertEqual([off for off, _ in pure], [0x2038])
+        self.assertIn(0x2038, sim)
+        self.assertTrue(set(off for off, _ in pure) <= set(sim))
+
+    def test_sim_scan_offsets_superset_of_pure(self):
+        # A mask hit with an out-of-image unwind must appear in the
+        # pre-filter but be dropped by the validated pure scan.
+        rng = random.Random(77)
+        junk = bytearray(rng.randbytes(0x100))
+        planted = rfun(0x1400, 0x1500, 0x2900)  # unwind beyond the image
+        blob = bytearray(RDATA + PDATA) + junk
+        blob[len(RDATA) + len(PDATA):len(RDATA) + len(PDATA) + 12] = planted
+        sections = [
+            (".text", 0x1000, b"\x90" * 0x1000),
+            (".rdata", 0x2000, bytes(blob)),
+        ]
+        img = pe.load(build_image(sections))
+        pure_offsets = [off for off, _ in pdata.scan_candidates(img, 0x1400)]
+        sim = _sim_scan_offsets(img.data, 0x1400,
+                                pdata.MAX_PLAUSIBLE_FUNCTION)
+        self.assertIn(0x2038, pure_offsets)     # valid entry
+        self.assertNotIn(0x205C, pure_offsets)  # planted, fails validation
+        self.assertIn(0x2038, sim)
+        self.assertIn(0x205C, sim)
+        self.assertTrue(set(pure_offsets) <= set(sim))
+
+    def test_sim_load_triples_matches_pure(self):
+        rng = random.Random(555)
+        triples = []
+        for i in range(48):
+            kind = i % 4
+            if kind == 0:
+                triples.append(rfun(0, 0, 0))                       # begin 0
+            elif kind == 1:
+                triples.append(rfun(0x100 + i, 0x100 + i - 1, 1))   # end<=begin
+            elif kind == 2:
+                triples.append(rfun(0x100 + i, 0x200 + i, 0))       # unwind 0
+            else:
+                triples.append(rfun(0x1000 + i, 0x1100 + i, 0x2000 + i))
+        pdata_bytes = b"".join(triples)
+        img = std_image(pdata_bytes=pdata_bytes,
+                            dir_exception=(0x3000, len(pdata_bytes)))
+        pure = [(e.begin, e.end, e.unwind)
+                for e in pdata.load_entries(img)]
+        chunk = img.read(0x3000, (len(pdata_bytes) // 12) * 12)
+        self.assertEqual(pure, _sim_load_triples(chunk))
+        self.assertEqual(len(pure), 12)
+
+
+@unittest.skipUnless(fastpath.HAVE_NUMPY, "requires numpy")
+class TestFastpathEquivalence(unittest.TestCase):
+    def test_entropy_and_zero_ratio(self):
+        rng = random.Random(6)
+        for _ in range(25):
+            data = rng.randbytes(rng.randrange(1, 0x3000))
+            self.assertAlmostEqual(fastpath.shannon_entropy(data),
+                                    shannon_entropy(data), places=9)
+            self.assertAlmostEqual(fastpath.zero_ratio(data),
+                                    zero_ratio(data), places=9)
+
+    def test_load_entries(self):
+        rng = random.Random(555)
+        triples = []
+        for i in range(48):
+            kind = i % 4
+            if kind == 0:
+                triples.append(rfun(0, 0, 0))
+            elif kind == 1:
+                triples.append(rfun(0x100 + i, 0x100 + i - 1, 1))
+            elif kind == 2:
+                triples.append(rfun(0x100 + i, 0x200 + i, 0))
+            else:
+                triples.append(rfun(0x1000 + i, 0x1100 + i, 0x2000 + i))
+        pdata_bytes = b"".join(triples)
+        img = std_image(pdata_bytes=pdata_bytes,
+                            dir_exception=(0x3000, len(pdata_bytes)))
+        begins, ends, unwinds = fastpath.load_entries(
+            img, 0x3000, len(pdata_bytes))
+        pure = [(e.begin, e.end, e.unwind)
+                for e in pdata.load_entries(img)]
+        self.assertEqual(list(zip(begins, ends, unwinds)), pure)
+
+    def test_scan_triples(self):
+        rng = random.Random(88)
+        for _ in range(10):
+            blob = rng.randbytes(rng.randrange(0, 0x1000))
+            rva = rng.randrange(0, 0x10000)
+            self.assertEqual(
+                fastpath.scan_triples(blob, rva, pdata.MAX_PLAUSIBLE_FUNCTION),
+                _sim_scan_offsets(blob, rva, pdata.MAX_PLAUSIBLE_FUNCTION))
+
+
+class TestFastpathGuard(unittest.TestCase):
+    def test_fastpath_raises_without_numpy(self):
+        if fastpath.HAVE_NUMPY:
+            self.skipTest("numpy installed")
+        with self.assertRaises(RuntimeError):
+            fastpath.shannon_entropy(b"abc")
+        with self.assertRaises(RuntimeError):
+            fastpath.zero_ratio(b"abc")
+        with self.assertRaises(RuntimeError):
+            fastpath.load_entries(None, 0x1000, 12)
+        with self.assertRaises(RuntimeError):
+            fastpath.scan_triples(b"abcdefabcdef", 1, 16)
 
 
 if __name__ == "__main__":
