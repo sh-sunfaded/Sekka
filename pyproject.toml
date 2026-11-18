@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sekka"
-version = "0.2.0"
+version = "0.2.1"
 description = "Static analysis for x64 PE exception tables: RUNTIME_FUNCTION lookup and UNWIND_INFO parsing (handlers, unwind codes, chained info), with readable-state selection across multiple memory captures"
 readme = "README.md"
 requires-python = ">=3.9"

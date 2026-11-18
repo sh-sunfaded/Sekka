@@ -12,7 +12,7 @@ Sekka reads the exception-handling metadata of x64 PE images:
 The name comes from the Japanese word for a snow crystal.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .pe import (  # noqa: F401
     EXCEPTION_DIRECTORY_INDEX,

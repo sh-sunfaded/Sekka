@@ -102,9 +102,18 @@ def cmd_lookup(args):
         _warn_machine(image)
     ordered = images
     if len(images) > 1:
+        # Same-basename captures from different directories would silently
+        # clobber each other in the mapping; disambiguate with a "#N" suffix.
         mapping = {}
         for image in images:
-            mapping.setdefault(image.name, image)
+            name = image.name
+            n = 2
+            while name in mapping:
+                name = "%s #%d" % (image.name, n)
+                n += 1
+            if name != image.name:
+                image.name = name
+            mapping[name] = image
         rows = choose_state(mapping, args.rva)
         print("captures at rva 0x%X (plain-like first):" % args.rva)
         for row in rows:
