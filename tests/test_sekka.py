@@ -467,6 +467,24 @@ class TestCLI(unittest.TestCase):
         self.assertIn("captures at rva 0x1400", out)
         self.assertIn("image: plain-capture.bin", out)
 
+    def test_multi_capture_same_basename(self):
+        rng = random.Random(21)
+        sub1 = os.path.join(self.tmp.name, "d1")
+        sub2 = os.path.join(self.tmp.name, "d2")
+        os.makedirs(sub1)
+        os.makedirs(sub2)
+        for sub in (sub1, sub2):
+            path = os.path.join(sub, "capture.bin")
+            with open(path, "wb") as fh:
+                fh.write(build_image(std_sections(text=rng.randbytes(0x40)),
+                                     dir_exception=(0x3000, len(PDATA))))
+        p1 = os.path.join(sub1, "capture.bin")
+        p2 = os.path.join(sub2, "capture.bin")
+        code, out, _ = run_cli(["lookup", p1, p2, "--rva", "0x1400"])
+        self.assertEqual(code, 0)
+        self.assertIn("capture.bin", out)
+        self.assertIn("capture.bin #2", out)
+
 
 # ----------------------------------------------------------------------
 # Fastpath (NumPy) verification
