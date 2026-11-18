@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sekka"
+version = "0.1.0"
+description = "Static analysis for x64 PE exception tables: RUNTIME_FUNCTION lookup and UNWIND_INFO parsing (handlers, unwind codes, chained info), with readable-state selection across multiple memory captures"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "sh-sunfaded" }]
+keywords = ["pe", "x64", "pdata", "unwind", "seh", "exception-handling", "static-analysis", "crash-dump"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/sh-sunfaded/Sekka"
+Repository = "https://github.com/sh-sunfaded/Sekka"
+Issues = "https://github.com/sh-sunfaded/Sekka/issues"
+
+[project.scripts]
+sekka = "sekka.cli:main"
+
+[tool.setuptools]
+packages = ["sekka"]
